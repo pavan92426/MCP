@@ -1,4 +1,4 @@
-# Building a Native MCP Server (stdio) — Hello World + Basic Math
+# gemma-tools-mcp — A Native MCP Server (stdio): Hello World + Basic Math
 
 This guide walks through building a minimal **Model Context Protocol (MCP)
 server** in Python that communicates over **stdio** (standard input/output)
@@ -7,11 +7,13 @@ and exposes two kinds of tools:
 - `hello_world` — returns a greeting
 - `add`, `subtract`, `multiply`, `divide` — basic math
 
-You'll then connect it to two different clients:
+You'll then connect it to three different clients:
 
 - **Claude Desktop / Claude Code** (official Anthropic apps)
 - **A local Gemma model running on Ollama** (via a small bridge script,
   since Ollama doesn't speak MCP natively)
+- **LM Studio running Gemma 4** (LM Studio has a built-in MCP client, so
+  no bridge script needed)
 
 ---
 
@@ -46,8 +48,8 @@ talk to it, not for you to type.
   Gemma model pulled
 
 ```bash
-uv init mcp-hello-math
-cd mcp-hello-math
+uv init gemma-tools-mcp
+cd gemma-tools-mcp
 
 uv add mcp
 ```
@@ -63,6 +65,15 @@ If you plan to test with local Gemma via Ollama, also run:
 uv add ollama
 ollama pull gemma3      # or gemma2, gemma3:4b, etc. — whatever tag you use
 ```
+
+> **Renaming a project you already `uv init`'d:** uv doesn't have a single
+> "rename" command. The name lives in two places — fix both:
+> 1. Rename the folder: `mv old-name gemma-tools-mcp && cd gemma-tools-mcp`
+> 2. Edit the `name = "..."` field under `[project]` in `pyproject.toml`
+>    to `gemma-tools-mcp`, then run `uv sync` to refresh the lockfile/venv
+>    metadata.
+> Don't forget to update any **absolute paths** pointing at the old folder
+> name in `claude_desktop_config.json` or LM Studio's `mcp.json`.
 
 ---
 
@@ -189,7 +200,7 @@ folder with an **absolute path**:
       "command": "uv",
       "args": [
         "--directory",
-        "/absolute/path/to/mcp-hello-math",
+        "/absolute/path/to/gemma-tools-mcp",
         "run",
         "server.py"
       ]
@@ -225,9 +236,10 @@ need a small **bridge script** that:
 1. Talks to your MCP server (the same way `test_client.py` does) to fetch
    the tool list.
 2. Converts that tool list into the JSON-schema shape Ollama expects.
-3. Sends the user's message + tool definitions to Gemma.
-4. If Gemma asks to call a tool, forwards the call to the MCP server and
-   feeds the result back to Gemma.
+3. Runs a **continuous chat loop**: read what you type, send the full
+   conversation history + tool definitions to Gemma, resolve any tool
+   calls against the MCP server, print the answer, then wait for your
+   next message — repeating until you type `exit`/`quit`.
 
 Create `ollama_bridge.py`:
 
@@ -237,8 +249,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import ollama
 
-server_params = StdioServerParameters(command="python", args=["server.py"])
-MODEL = "gemma3"  # match the tag from `ollama list`
+server_params = StdioServerParameters(command="uv", args=["run", "server.py"])
+MODEL = "gemma4"  # match the exact tag from `ollama list`
 
 def mcp_tool_to_ollama_format(tool) -> dict:
     return {
@@ -250,6 +262,17 @@ def mcp_tool_to_ollama_format(tool) -> dict:
         },
     }
 
+async def handle_tool_calls(session, assistant_message, messages):
+    tool_calls = assistant_message.get("tool_calls") or []
+    for call in tool_calls:
+        name = call["function"]["name"]
+        args = call["function"]["arguments"]
+        if isinstance(args, str):
+            args = json.loads(args)
+        result = await session.call_tool(name, args)
+        messages.append({"role": "tool", "content": result.content[0].text, "name": name})
+    return bool(tool_calls)
+
 async def main():
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -257,25 +280,29 @@ async def main():
             mcp_tools = (await session.list_tools()).tools
             ollama_tools = [mcp_tool_to_ollama_format(t) for t in mcp_tools]
 
-            messages = [{"role": "user",
-                         "content": "Say hello to Alice, then tell me what 23 times 4 is."}]
+            messages = []  # persists across turns so Gemma keeps context
+            while True:
+                user_input = input("You: ").strip()
+                if user_input.lower() in {"exit", "quit"}:
+                    break
+                messages.append({"role": "user", "content": user_input})
 
-            response = ollama.chat(model=MODEL, messages=messages, tools=ollama_tools)
-            messages.append(response["message"])
+                response = ollama.chat(model=MODEL, messages=messages, tools=ollama_tools)
+                assistant_message = response["message"]
+                messages.append(assistant_message)
 
-            for call in response["message"].get("tool_calls") or []:
-                name = call["function"]["name"]
-                args = call["function"]["arguments"]
-                if isinstance(args, str):
-                    args = json.loads(args)
-                result = await session.call_tool(name, args)
-                messages.append({"role": "tool", "content": result.content[0].text, "name": name})
+                while await handle_tool_calls(session, assistant_message, messages):
+                    response = ollama.chat(model=MODEL, messages=messages, tools=ollama_tools)
+                    assistant_message = response["message"]
+                    messages.append(assistant_message)
 
-            final = ollama.chat(model=MODEL, messages=messages, tools=ollama_tools)
-            print(final["message"]["content"])
+                print(f"Gemma: {assistant_message['content']}\n")
 
 asyncio.run(main())
 ```
+
+(The actual file also prints which tool was called and its result, and
+handles `Ctrl+C`/EOF gracefully — see `ollama_bridge.py` in your project.)
 
 Run it (make sure `ollama serve` is running and the model is pulled):
 
@@ -283,9 +310,31 @@ Run it (make sure `ollama serve` is running and the model is pulled):
 uv run ollama_bridge.py
 ```
 
-Gemma should respond with something like:
-*"Hello, Alice! And 23 times 4 is 92."* — with the actual multiplication
-having been done by your `multiply` tool, not "guessed" by the model.
+Then just keep typing — each line is a new turn, and the conversation
+history (`messages`) is kept in memory for the whole session so Gemma
+remembers earlier turns:
+
+```
+Connected. Available tools: ['hello_world', 'add', 'subtract', 'multiply', 'divide']
+Type a message (or 'exit'/'quit' to stop).
+
+You: say hello to Alice
+  [tool call] hello_world({'name': 'Alice'}) -> Hello, Alice!
+Gemma: Hello, Alice!
+
+You: now what's 23 times 4?
+  [tool call] multiply({'a': 23, 'b': 4}) -> 92.0
+Gemma: 23 times 4 is 92.
+
+You: exit
+Goodbye!
+```
+
+**Why your earlier one-shot run only answered once:** the original version
+of this script sent a single hardcoded prompt and exited after one
+response — it never looped back to read more input. The version above
+wraps that same logic in a `while True` loop with a persistent
+`messages` list, which is what gives you a real back-and-forth chat.
 
 **Alternative for local models:** if you'd rather not maintain a bridge
 script yourself, tools like **LM Studio** (which has added native MCP
@@ -295,10 +344,76 @@ their docs for current setup steps, since these projects move quickly.
 
 ---
 
-## 7. Project structure recap
+## 7. Connect it to LM Studio (running Gemma 4)
+
+Unlike Ollama, **LM Studio has a built-in MCP client** (since v0.3.17), so
+you don't need a bridge script — you just point LM Studio's `mcp.json` at
+your server the same way you'd point Claude Desktop at it.
+
+### 7.1 Get LM Studio + Gemma 4
+
+1. Install/update [LM Studio](https://lmstudio.ai) to a recent version
+   (Help → About to check; MCP support requires 0.3.17+).
+2. In the **Discover** tab, search for **Gemma 4** and download a size that
+   fits your hardware — e.g. `E2B`/`E4B` for laptops, `26B` (MoE) or `31B`
+   for a workstation with more VRAM. Pick an **instruction-tuned** variant
+   for chat/tool-use.
+3. Confirm the model shows a tool/function-calling icon in its card — that
+   indicates LM Studio recognizes it as tool-call capable.
+
+### 7.2 Register your MCP server
+
+1. Open LM Studio, go to the right sidebar's **Program** tab.
+2. Click **Install → Edit mcp.json**. This opens LM Studio's MCP config
+   file in its built-in editor (it lives at `~/.lmstudio/mcp.json` on
+   macOS/Linux, `%USERPROFILE%\.lmstudio\mcp.json` on Windows).
+3. Add your server, same `uv run` pattern as the Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "hello-math": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/gemma-tools-mcp",
+        "run",
+        "server.py"
+      ]
+    }
+  }
+}
+```
+
+4. Save the file — LM Studio auto-reloads `mcp.json` and spawns the server
+   process for you.
+
+### 7.3 Use it in a chat
+
+1. Load the Gemma 4 model in a new chat.
+2. At the bottom of the chat input, find the MCP/tools selector and enable
+   `hello-math`.
+3. Ask something like *"Say hello to Priya, then tell me what 17 minus 9
+   is."*
+4. LM Studio will show a **confirmation dialog** before each tool call
+   (you can review/edit the arguments, and choose "allow once" or "always
+   allow" for that tool) — approve it, and Gemma 4 will use `hello_world`
+   and `subtract` to answer.
+
+This is generally simpler to get right than the Ollama route, precisely
+because LM Studio handles the MCP protocol itself instead of you writing a
+bridge script.
+
+> LM Studio's UI and exact menu names can change between releases — if
+> something doesn't match what you see, check https://lmstudio.ai/docs for
+> the current steps.
+
+---
+
+## 8. Project structure recap
 
 ```
-mcp-hello-math/
+gemma-tools-mcp/
 ├── .venv/              # created by uv, don't edit directly
 ├── pyproject.toml      # created by uv, tracks dependencies
 ├── server.py            # the MCP server itself
@@ -308,7 +423,7 @@ mcp-hello-math/
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
@@ -318,10 +433,12 @@ mcp-hello-math/
 | JSON parse errors in Claude Desktop logs | Trailing commas or unescaped backslashes in `claude_desktop_config.json` — validate with a JSON linter |
 | `uv: command not found` inside Claude Desktop logs | Use the absolute path to the `uv` binary in `command` instead of relying on PATH |
 | Ollama bridge errors on `tool_calls` | Some Gemma tags/versions support function calling better than others — check `ollama show <model>` for "tools" capability, or try a newer tag |
+| LM Studio doesn't show your server / tools | `mcp.json` has a syntax error (validate with a linter), the path in `--directory` is wrong, or `uv` isn't on LM Studio's PATH — try the absolute path to the `uv` binary |
+| LM Studio model never calls the tool | Confirm the loaded Gemma 4 variant is instruction-tuned and shows the tool-calling icon, and that the `hello-math` server is toggled on in the chat's tools selector |
 
 ---
 
-## 9. Where to go from here
+## 10. Where to go from here
 
 - Add more tools (file access, web requests, database queries) — same
   `@mcp.tool()` pattern.
