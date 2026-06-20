@@ -10,12 +10,12 @@ Ollama does not speak MCP natively, so this script does the translation:
      get the result, and send it back to Gemma for a final answer.
 
 Prerequisites:
-    pip install mcp ollama
+    uv add mcp ollama
     ollama pull gemma3        # or whichever Gemma tag you have
     ollama serve              # if not already running
 
 Run:
-    python ollama_bridge.py
+    uv run ollama_bridge.py
 """
 
 import asyncio
@@ -25,8 +25,8 @@ from mcp.client.stdio import stdio_client
 import ollama
 
 server_params = StdioServerParameters(
-    command="python",
-    args=["server.py"],
+    command="uv",
+    args=["run", "server.py"],
 )
 
 MODEL = "gemma3"  # change to match `ollama list` on your machine

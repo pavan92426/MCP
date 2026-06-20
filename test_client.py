@@ -4,7 +4,7 @@ MCP Python SDK, with no LLM involved. Use this to confirm your server works
 before plugging it into Claude Desktop or a local model.
 
 Run:
-    python test_client.py
+    uv run test_client.py
 """
 
 import asyncio
@@ -12,8 +12,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 server_params = StdioServerParameters(
-    command="python",
-    args=["server.py"],
+    command="uv",
+    args=["run", "server.py"],
 )
 
 

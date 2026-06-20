@@ -5,7 +5,7 @@ Exposes two kinds of tools:
   2. add / subtract / multiply / divide - basic math
 
 Run it directly to sanity check imports:
-    python server.py
+    uv run server.py
 (It will then sit waiting for JSON-RPC messages on stdin — that's normal.
  An MCP client, like Claude Desktop or a custom script, is what actually
  talks to it. Press Ctrl+C to quit when testing manually.)

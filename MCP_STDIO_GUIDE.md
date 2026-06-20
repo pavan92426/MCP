@@ -40,22 +40,27 @@ talk to it, not for you to type.
 ## 2. Prerequisites
 
 - Python 3.10+
+- [uv](https://docs.astral.sh/uv/) installed (`curl -LsSf https://astral.sh/uv/install.sh | sh` on macOS/Linux, or see the uv docs for Windows)
 - The official MCP Python SDK
 - (Optional, for local Gemma) [Ollama](https://ollama.com) installed and a
   Gemma model pulled
 
 ```bash
-mkdir mcp-hello-math && cd mcp-hello-math
-python -m venv venv
-source venv/bin/activate     # Windows: venv\Scripts\activate
+uv init mcp-hello-math
+cd mcp-hello-math
 
-pip install mcp
+uv add mcp
 ```
+
+`uv init` creates the project (`pyproject.toml`, a `.venv`, a `main.py`
+stub you can ignore/delete). `uv add mcp` installs the SDK into that
+project's virtual environment and records it in `pyproject.toml` — no
+manual `venv activate` step needed; `uv run` handles that for you.
 
 If you plan to test with local Gemma via Ollama, also run:
 
 ```bash
-pip install ollama
+uv add ollama
 ollama pull gemma3      # or gemma2, gemma3:4b, etc. — whatever tag you use
 ```
 
@@ -143,7 +148,7 @@ asyncio.run(main())
 Run it:
 
 ```bash
-python test_client.py
+uv run test_client.py
 ```
 
 Expected output:
@@ -172,23 +177,32 @@ JSON config file.
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | Linux | `~/.config/Claude/claude_desktop_config.json` |
 
-Add an entry under `mcpServers`, using the **absolute path** to your script
-and the Python interpreter inside your virtual environment:
+Add an entry under `mcpServers`, using `uv run` so the project's
+dependencies resolve correctly. Use `--directory` to point at your project
+folder with an **absolute path**:
 
 ```json
 {
   "mcpServers": {
     "hello-math": {
       "type": "stdio",
-      "command": "/absolute/path/to/mcp-hello-math/venv/bin/python",
-      "args": ["/absolute/path/to/mcp-hello-math/server.py"]
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/mcp-hello-math",
+        "run",
+        "server.py"
+      ]
     }
   }
 }
 ```
 
-On Windows, `command` would point to something like
-`C:\path\to\venv\Scripts\python.exe`.
+If `uv` isn't on the PATH that Claude Desktop launches with (common on
+macOS, since GUI apps don't always inherit your shell's PATH), use the
+absolute path to the `uv` binary instead — find it with `which uv`
+(macOS/Linux) or `where uv` (Windows), e.g.
+`"command": "/Users/you/.local/bin/uv"`.
 
 Then **fully quit and restart** Claude Desktop. Your tools (`hello_world`,
 `add`, `subtract`, `multiply`, `divide`) will show up in the tool/connector
@@ -266,7 +280,7 @@ asyncio.run(main())
 Run it (make sure `ollama serve` is running and the model is pulled):
 
 ```bash
-python ollama_bridge.py
+uv run ollama_bridge.py
 ```
 
 Gemma should respond with something like:
@@ -285,10 +299,11 @@ their docs for current setup steps, since these projects move quickly.
 
 ```
 mcp-hello-math/
-├── venv/
-├── server.py          # the MCP server itself
-├── test_client.py      # sanity check, no LLM needed
-└── ollama_bridge.py     # optional: wires server.py to local Gemma
+├── .venv/              # created by uv, don't edit directly
+├── pyproject.toml      # created by uv, tracks dependencies
+├── server.py            # the MCP server itself
+├── test_client.py       # sanity check, no LLM needed
+└── ollama_bridge.py      # optional: wires server.py to local Gemma
 ```
 
 ---
@@ -297,10 +312,11 @@ mcp-hello-math/
 
 | Symptom | Likely cause |
 |---|---|
-| Claude Desktop doesn't show the server | Wrong absolute path, or you edited the config but didn't fully quit/restart the app |
-| `ModuleNotFoundError: mcp` | You're pointing `command` at the system Python instead of your venv's Python |
+| Claude Desktop doesn't show the server | Wrong absolute path in `--directory`, or `uv` not found on the launching PATH, or you didn't fully quit/restart the app after editing the config |
+| `ModuleNotFoundError: mcp` | You ran `python server.py` directly instead of `uv run server.py` — uv's `.venv` isn't activated unless you go through `uv run` |
 | Server "hangs" when run directly | Normal — it's waiting for a client on stdin, not for terminal input |
 | JSON parse errors in Claude Desktop logs | Trailing commas or unescaped backslashes in `claude_desktop_config.json` — validate with a JSON linter |
+| `uv: command not found` inside Claude Desktop logs | Use the absolute path to the `uv` binary in `command` instead of relying on PATH |
 | Ollama bridge errors on `tool_calls` | Some Gemma tags/versions support function calling better than others — check `ollama show <model>` for "tools" capability, or try a newer tag |
 
 ---
